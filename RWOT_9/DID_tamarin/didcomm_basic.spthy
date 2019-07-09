@@ -1,0 +1,94 @@
+theory didcomm_basic
+/* In this (very simple) model, the agents already know each other's public key.
+It just demonstrates how a single message exchange is modeled. We do not yet model DIDs and key lifecycle.
+ */
+
+
+
+begin
+
+builtins: signing, asymmetric-encryption
+
+/* auth_encrypt and auth_decrypt model authCrypt, an authenticated, but repudiable encryption
+Encrypting requires the receiver's public key, and additionally the *sender's private key*
+Decrypting requires the receiver's private key, and additionally the *sender's public key*
+See https://github.com/hyperledger/aries-rfcs/tree/03a74a813e9e4f32d969ae4c37a0b3bb538c28c8/features/0019-encryption-envelope
+Note that we abstract away from the encrypted cek, which then encrypts the plaintext; this only affects efficiency, but not security.
+*/
+
+functions: auth_encrypt/3, auth_decrypt/3, auth_verify/3, true/0
+
+equations: auth_decrypt(auth_encrypt(msg, sender_sk, pk(receiver_sk)), pk(sender_sk), receiver_sk) = msg,
+auth_verify(auth_encrypt(msg, sender_sk, pk(receiver_sk)), pk(sender_sk), receiver_sk) = true
+
+
+
+/* Agent Initialization 
+In this very simple version, we assume the agents know each other's public keys.
+$A and $B are public names uniquely identifying agents.
+ */
+rule init_agents:
+[Fr(~skA), Fr(~skB)]
+--[Neq($A, $B)]->
+[Agent_St_Init($A, ~skA, $B, pk(~skB)), Agent_St_Init($B, ~skB, $A, pk(~skA)), Out(pk(~skA)), Out(pk(~skB))]
+
+
+// We assume the message is a freshly generated random value that should stay secret between A and B
+rule a_send_authcrypt_msg_to_b:
+[Agent_St_Init($A, ~skA, $B, pkB), Fr(~msg)]
+// We put an action fact here to reference later in the security property
+--[Running($A, $B, ~msg)]->
+// While the encrypted sender and the auth-encrypted message is all part of "authCrypt", we model it as two different parts.
+[Out(<'DIDComm_Message', aenc(pk(~skA), pkB), auth_encrypt(~msg, ~skA, pkB)>)]
+
+
+rule b_receive_authcrypt_msg_from_a:
+let pkSender = adec(aencPkSender, ~skB)
+    decryptedMsg = auth_decrypt(authEncMsg, pkSender, ~skB)
+    decryptionSuccessful = auth_verify(authEncMsg, pkSender, ~skB) in
+[In(<'DIDComm_Message', aencPkSender, authEncMsg>), Agent_St_Init($B, ~skB, $A, pkSender)]
+--[MustBeTrue(decryptionSuccessful), Secret(decryptedMsg), Commit($A, $B, decryptedMsg), Finish()]->
+[]
+
+
+// This restriction is used for the check for successfuly encryption
+restriction checks:
+    "All x #i. MustBeTrue(x) @ #i ==> x = true"
+
+// This restriction ensures that A and B are instantiated as different agents
+restriction neq:
+    "All x #i. Neq(x,x) @ #i ==> F"
+
+// This lemma ensures the protocol is executable (there are no obvious mistakes)
+lemma executable:
+exists-trace
+" Ex #i. Finish() @ #i"
+
+
+// These lemmas give semantics to the security claims made in the protocol
+
+lemma secrecy:
+" All msg #i. Secret(msg) @ #i ==> not Ex #j. K(msg) @ j"
+
+lemma agreement:
+" All didA didB msg #i. Commit(didA, didB, msg) @ i ==> Ex #j. Running(didA, didB, msg) @ j & #j < #i"
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

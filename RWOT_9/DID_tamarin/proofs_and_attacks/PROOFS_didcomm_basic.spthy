@@ -1,0 +1,247 @@
+theory didcomm_basic begin
+
+// Function signature and definition of the equational theory E
+
+functions: adec/2, aenc/2, auth_decrypt/3, auth_encrypt/3,
+           auth_verify/3, fst/1, pair/2, pk/1, sign/2, snd/1, true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    auth_decrypt(auth_encrypt(msg, sender_sk, pk(receiver_sk)),
+                 pk(sender_sk), receiver_sk)
+  = msg,
+    auth_verify(auth_encrypt(msg, sender_sk, pk(receiver_sk)),
+                pk(sender_sk), receiver_sk)
+  = true,
+    fst(<x.1, x.2>) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+rule (modulo E) init_agents:
+   [ Fr( ~skA ), Fr( ~skB ) ]
+  --[ Neq( $A, $B ) ]->
+   [
+   Agent_St_Init( $A, ~skA, $B, pk(~skB) ),
+   Agent_St_Init( $B, ~skB, $A, pk(~skA) ), Out( pk(~skA) ),
+   Out( pk(~skB) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) a_send_authcrypt_msg_to_b:
+   [ Agent_St_Init( $A, ~skA, $B, pkB ), Fr( ~msg ) ]
+  --[ Running( $A, $B, ~msg ) ]->
+   [
+   Out( <'DIDComm_Message', aenc(pk(~skA), pkB), 
+         auth_encrypt(~msg, ~skA, pkB)>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) b_receive_authcrypt_msg_from_a:
+   [
+   In( <'DIDComm_Message', aencPkSender, authEncMsg> ),
+   Agent_St_Init( $B, ~skB, $A, adec(aencPkSender, ~skB) )
+   ]
+  --[
+  MustBeTrue( auth_verify(authEncMsg, adec(aencPkSender, ~skB), ~skB)
+  ),
+  Secret( auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB) ),
+  Commit( $A, $B,
+          auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB)
+  ),
+  Finish( )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) b_receive_authcrypt_msg_from_a:
+     [
+     In( <'DIDComm_Message', aencPkSender, authEncMsg> ),
+     Agent_St_Init( $B, ~skB, $A, z )
+     ]
+    --[
+    MustBeTrue( z.1 ), Secret( z.2 ), Commit( $A, $B, z.2 ), Finish( )
+    ]->
+     [ ]
+    variants (modulo AC)
+    1. ~skB  = ~skB.11
+       aencPkSender
+             = aencPkSender.12
+       authEncMsg
+             = authEncMsg.13
+       z     = adec(aencPkSender.12, ~skB.11)
+       z.1   = auth_verify(authEncMsg.13, adec(aencPkSender.12, ~skB.11),
+                           ~skB.11)
+       z.2   = auth_decrypt(authEncMsg.13, adec(aencPkSender.12, ~skB.11),
+                            ~skB.11)
+    
+    2. ~skB  = ~skB.13
+       aencPkSender
+             = aenc(z.17, pk(~skB.13))
+       authEncMsg
+             = authEncMsg.15
+       z     = z.17
+       z.1   = auth_verify(authEncMsg.15, z.17, ~skB.13)
+       z.2   = auth_decrypt(authEncMsg.15, z.17, ~skB.13)
+    
+    3. ~skB  = ~skB.13
+       aencPkSender
+             = aenc(pk(x.22), pk(~skB.13))
+       authEncMsg
+             = auth_encrypt(z.19, x.22, pk(~skB.13))
+       z     = pk(x.22)
+       z.1   = true
+       z.2   = z.19
+  */
+
+restriction checks:
+  "∀ x #i. (MustBeTrue( x ) @ #i) ⇒ (x = true)"
+  // safety formula
+
+restriction neq:
+  "∀ x #i. (Neq( x, x ) @ #i) ⇒ (⊥)"
+  // safety formula
+
+lemma executable:
+  exists-trace "∃ #i. Finish( ) @ #i"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ #i. (Finish( ) @ #i)"
+*/
+simplify
+solve( Agent_St_Init( $B, ~skB, $A, pk(x) ) ▶₁ #i )
+  case init_agents_case_1
+  solve( !KU( aenc(pk(~skB), pk(~skB.1)) ) @ #vk.3 )
+    case a_send_authcrypt_msg_to_b
+    solve( !KU( auth_encrypt(z, ~skB, pk(~skB.1)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      SOLVED // trace found
+    qed
+  qed
+qed
+
+lemma secrecy:
+  all-traces
+  "∀ msg #i. (Secret( msg ) @ #i) ⇒ (¬(∃ #j. K( msg ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ msg #i. (Secret( msg ) @ #i) ∧ ∃ #j. (K( msg ) @ #j)"
+*/
+simplify
+solve( Agent_St_Init( $B, ~skB, $A, pk(x) ) ▶₁ #i )
+  case init_agents_case_1
+  solve( !KU( aenc(pk(~skB), pk(~skB.1)) ) @ #vk.3 )
+    case a_send_authcrypt_msg_to_b
+    solve( !KU( auth_encrypt(msg, ~skB, pk(~skB.1)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      solve( !KU( ~msg ) @ #vk.5 )
+        case a_send_authcrypt_msg_to_b
+        by solve( !KU( ~skB.1 ) @ #vk.7 )
+      qed
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skB ) @ #vk.6 )
+    qed
+  next
+    case c_aenc
+    solve( !KU( auth_encrypt(msg, ~skB, pk(~skB.1)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      solve( !KU( ~msg ) @ #vk.5 )
+        case a_send_authcrypt_msg_to_b
+        by solve( !KU( ~skB.1 ) @ #vk.8 )
+      qed
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skB ) @ #vk.8 )
+    qed
+  qed
+next
+  case init_agents_case_2
+  solve( !KU( aenc(pk(~skA), pk(~skB)) ) @ #vk.3 )
+    case a_send_authcrypt_msg_to_b
+    solve( !KU( auth_encrypt(msg, ~skA, pk(~skB)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      solve( !KU( ~msg ) @ #vk.5 )
+        case a_send_authcrypt_msg_to_b
+        by solve( !KU( ~skB ) @ #vk.7 )
+      qed
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skA ) @ #vk.6 )
+    qed
+  next
+    case c_aenc
+    solve( !KU( auth_encrypt(msg, ~skA, pk(~skB)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      solve( !KU( ~msg ) @ #vk.5 )
+        case a_send_authcrypt_msg_to_b
+        by solve( !KU( ~skB ) @ #vk.8 )
+      qed
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skA ) @ #vk.8 )
+    qed
+  qed
+qed
+
+lemma agreement:
+  all-traces
+  "∀ didA didB msg #i.
+    (Commit( didA, didB, msg ) @ #i) ⇒
+    (∃ #j. (Running( didA, didB, msg ) @ #j) ∧ (#j < #i))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ didA didB msg #i.
+  (Commit( didA, didB, msg ) @ #i)
+ ∧
+  ∀ #j. (Running( didA, didB, msg ) @ #j) ⇒ ¬(#j < #i)"
+*/
+simplify
+solve( Agent_St_Init( $B, ~skB, $A, pk(x) ) ▶₁ #i )
+  case init_agents_case_1
+  solve( !KU( aenc(pk(~skB), pk(~skB.1)) ) @ #vk.3 )
+    case a_send_authcrypt_msg_to_b
+    solve( !KU( auth_encrypt(msg, ~skB, pk(~skB.1)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      by contradiction /* from formulas */
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skB ) @ #vk.6 )
+    qed
+  next
+    case c_aenc
+    solve( !KU( auth_encrypt(msg, ~skB, pk(~skB.1)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      by contradiction /* from formulas */
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skB ) @ #vk.8 )
+    qed
+  qed
+next
+  case init_agents_case_2
+  solve( !KU( aenc(pk(~skA), pk(~skB)) ) @ #vk.3 )
+    case a_send_authcrypt_msg_to_b
+    solve( !KU( auth_encrypt(msg, ~skA, pk(~skB)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      by contradiction /* from formulas */
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skA ) @ #vk.6 )
+    qed
+  next
+    case c_aenc
+    solve( !KU( auth_encrypt(msg, ~skA, pk(~skB)) ) @ #vk.4 )
+      case a_send_authcrypt_msg_to_b
+      by contradiction /* from formulas */
+    next
+      case c_auth_encrypt
+      by solve( !KU( ~skA ) @ #vk.8 )
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end

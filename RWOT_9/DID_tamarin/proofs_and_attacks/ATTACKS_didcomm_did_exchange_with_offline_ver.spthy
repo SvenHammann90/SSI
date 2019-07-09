@@ -1,0 +1,677 @@
+theory didcomm_did_exchange_with_offline_ver begin
+
+// Function signature and definition of the equational theory E
+
+functions: adec/2, aenc/2, auth_decrypt/3, auth_encrypt/3,
+           auth_verify/3, did_generate/1, fst/1, pair/2, pk/1, sign/2, snd/1,
+           true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    auth_decrypt(auth_encrypt(msg, sender_sk, pk(receiver_sk)),
+                 pk(sender_sk), receiver_sk)
+  = msg,
+    auth_verify(auth_encrypt(msg, sender_sk, pk(receiver_sk)),
+                pk(sender_sk), receiver_sk)
+  = true,
+    fst(<x.1, x.2>) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+rule (modulo E) setup_issuer:
+   [ Fr( ~skIssuer ) ]
+  --[ SetupIssuer( ) ]->
+   [
+   !Sk_Issuer( ~skIssuer ), !Pk_Issuer( pk(~skIssuer) ),
+   Out( pk(~skIssuer) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) issue_verifiable_credential:
+   [ !DID_belongs_to( $Name, did ), !Sk_Issuer( ~skIssuer ) ]
+  -->
+   [
+   Out( sign(<'DID_binding', $Name, did>, ~skIssuer) ),
+   Issued_VC( $Name, did, sign(<'DID_binding', $Name, did>, ~skIssuer)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) a_send_invitation:
+   [ Fr( ~recipientSkA ) ]
+  --[ SendInvitation( ) ]->
+   [
+   Out( <'Invitation', $A, $B, pk(~recipientSkA)> ),
+   Inviter_St_invited( $A, ~recipientSkA, $B )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) b_receive_invitation:
+   [ In( <'Invitation', $A, $B, recipientPkA> ) ]
+  --[ ReceiveInvitation( ) ]->
+   [ Invitee_St_invited( $B, recipientPkA, $A ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) b_generate_did_and_send_exchange_request:
+   [ Invitee_St_invited( $B, recipientPkA, $A ), Fr( ~skB ) ]
+  --[ SendExchangeRequest( ) ]->
+   [
+   Out( aenc(<'ExchangeRequest', $B, $A, did_generate(pk(~skB)), 
+              pk(~skB)>,
+             recipientPkA)
+   ),
+   Invitee_St_requested( $B, recipientPkA, $A, ~skB,
+                         did_generate(pk(~skB)), pk(~skB)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) a_receive_exchange_request:
+   [
+   Inviter_St_invited( $A, ~recipientSkA, $B ),
+   In( aenc(<'ExchangeRequest', $B, $A, didB, pkB>, pk(~recipientSkA))
+   )
+   ]
+  --[ ReceiveExchangeRequest( ) ]->
+   [ Inviter_St_requested( $A, ~recipientSkA, $B, didB, pkB ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) a_generate_did_and_send_exchange_response:
+   [
+   Inviter_St_requested( $A, ~recipientSkA, $B, didB, pkB ),
+   Fr( ~skA )
+   ]
+  --[ SendExchangeResponse( ) ]->
+   [
+   Out( <'ExchangeRequest', aenc(pk(~skA), pkB), 
+         auth_encrypt(<<did_generate(pk(~skA)), pk(~skA)>, 
+                       sign(<did_generate(pk(~skA)), pk(~skA)>, ~recipientSkA)>,
+                      ~skA, pkB)
+        >
+   ),
+   Inviter_St_responded( $A, $B, didB, pkB, did_generate(pk(~skA)),
+                         ~skA
+   ),
+   Inviter_DID_Displays( $A, did_generate(pk(~skA)), didB )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) b_receive_exchange_response:
+   [
+   Invitee_St_requested( $B, recipientPkA, $A, ~skB, didB, pkB ),
+   In( <'ExchangeRequest', aencPkSender, authEncMsg> )
+   ]
+  --[
+  ReceiveExchangeResponse( ),
+  MustBeTrue( auth_verify(authEncMsg,
+                          snd(fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB))),
+                          ~skB)
+  ),
+  MustBeEqual( adec(aencPkSender, ~skB),
+               snd(fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB)))
+  ),
+  MustBeTrue( verify(snd(auth_decrypt(authEncMsg,
+                                      adec(aencPkSender, ~skB), ~skB)),
+                     fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB)),
+                     recipientPkA)
+  )
+  ]->
+   [
+   Invitee_St_responded( $B, $A, ~skB, didB, pkB,
+                         fst(fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB))),
+                         snd(fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB)))
+   ),
+   Invitee_DID_Displays( $B, didB,
+                         fst(fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skB), ~skB)))
+   )
+   ]
+
+  /*
+  rule (modulo AC) b_receive_exchange_response:
+     [
+     Invitee_St_requested( $B, recipientPkA, $A, ~skB, didB, pkB ),
+     In( <'ExchangeRequest', aencPkSender, authEncMsg> )
+     ]
+    --[
+    ReceiveExchangeResponse( ), MustBeTrue( z.2 ),
+    MustBeEqual( z.3, z.1 ), MustBeTrue( z.4 )
+    ]->
+     [
+     Invitee_St_responded( $B, $A, ~skB, didB, pkB, z, z.1 ),
+     Invitee_DID_Displays( $B, didB, z )
+     ]
+    variants (modulo AC)
+    1. ~skB  = ~skB.16
+       aencPkSender
+             = aencPkSender.17
+       authEncMsg
+             = authEncMsg.18
+       recipientPkA
+             = recipientPkA.21
+       z     = fst(fst(auth_decrypt(authEncMsg.18,
+                                    adec(aencPkSender.17, ~skB.16), ~skB.16)))
+       z.1   = snd(fst(auth_decrypt(authEncMsg.18,
+                                    adec(aencPkSender.17, ~skB.16), ~skB.16)))
+       z.2   = auth_verify(authEncMsg.18,
+                           snd(fst(auth_decrypt(authEncMsg.18, adec(aencPkSender.17, ~skB.16),
+                                                ~skB.16))),
+                           ~skB.16)
+       z.3   = adec(aencPkSender.17, ~skB.16)
+       z.4   = verify(snd(auth_decrypt(authEncMsg.18,
+                                       adec(aencPkSender.17, ~skB.16), ~skB.16)),
+                      fst(auth_decrypt(authEncMsg.18, adec(aencPkSender.17, ~skB.16),
+                                       ~skB.16)),
+                      recipientPkA.21)
+    
+    2. ~skB  = ~skB.18
+       aencPkSender
+             = aenc(z.28, pk(~skB.18))
+       authEncMsg
+             = authEncMsg.20
+       recipientPkA
+             = recipientPkA.23
+       z     = fst(fst(auth_decrypt(authEncMsg.20, z.28, ~skB.18)))
+       z.1   = snd(fst(auth_decrypt(authEncMsg.20, z.28, ~skB.18)))
+       z.2   = auth_verify(authEncMsg.20,
+                           snd(fst(auth_decrypt(authEncMsg.20, z.28, ~skB.18))), ~skB.18)
+       z.3   = z.28
+       z.4   = verify(snd(auth_decrypt(authEncMsg.20, z.28, ~skB.18)),
+                      fst(auth_decrypt(authEncMsg.20, z.28, ~skB.18)), recipientPkA.23)
+    
+    3. ~skB  = ~skB.19
+       aencPkSender
+             = aenc(pk(x.33), pk(~skB.19))
+       authEncMsg
+             = auth_encrypt(x.32, x.33, pk(~skB.19))
+       recipientPkA
+             = recipientPkA.24
+       z     = fst(fst(x.32))
+       z.1   = snd(fst(x.32))
+       z.2   = auth_verify(auth_encrypt(x.32, x.33, pk(~skB.19)),
+                           snd(fst(x.32)), ~skB.19)
+       z.3   = pk(x.33)
+       z.4   = verify(snd(x.32), fst(x.32), recipientPkA.24)
+    
+    4. ~skB  = ~skB.19
+       aencPkSender
+             = aenc(pk(x.33), pk(~skB.19))
+       authEncMsg
+             = auth_encrypt(<x.32, sign(x.32, x.34)>, x.33, pk(~skB.19))
+       recipientPkA
+             = pk(x.34)
+       z     = fst(x.32)
+       z.1   = snd(x.32)
+       z.2   = auth_verify(auth_encrypt(<x.32, sign(x.32, x.34)>, x.33,
+                                        pk(~skB.19)),
+                           snd(x.32), ~skB.19)
+       z.3   = pk(x.33)
+       z.4   = true
+    
+    5. ~skB  = ~skB.19
+       aencPkSender
+             = aenc(pk(x.33), pk(~skB.19))
+       authEncMsg
+             = auth_encrypt(<<z.26, pk(x.33)>, sign(<z.26, pk(x.33)>, x.34)>,
+                            x.33, pk(~skB.19))
+       recipientPkA
+             = pk(x.34)
+       z     = z.26
+       z.1   = pk(x.33)
+       z.2   = true
+       z.3   = pk(x.33)
+       z.4   = true
+    
+    6. ~skB  = ~skB.20
+       aencPkSender
+             = aenc(pk(x.34), pk(~skB.20))
+       authEncMsg
+             = auth_encrypt(<x.33, x.35>, x.34, pk(~skB.20))
+       recipientPkA
+             = recipientPkA.25
+       z     = fst(x.33)
+       z.1   = snd(x.33)
+       z.2   = auth_verify(auth_encrypt(<x.33, x.35>, x.34, pk(~skB.20)),
+                           snd(x.33), ~skB.20)
+       z.3   = pk(x.34)
+       z.4   = verify(x.35, x.33, recipientPkA.25)
+    
+    7. ~skB  = ~skB.20
+       aencPkSender
+             = aenc(pk(x.34), pk(~skB.20))
+       authEncMsg
+             = auth_encrypt(<<z.27, z.28>, sign(<z.27, z.28>, x.35)>, x.34,
+                            pk(~skB.20))
+       recipientPkA
+             = pk(x.35)
+       z     = z.27
+       z.1   = z.28
+       z.2   = auth_verify(auth_encrypt(<<z.27, z.28>, 
+                                         sign(<z.27, z.28>, x.35)>,
+                                        x.34, pk(~skB.20)),
+                           z.28, ~skB.20)
+       z.3   = pk(x.34)
+       z.4   = true
+    
+    8. ~skB  = ~skB.20
+       aencPkSender
+             = aenc(pk(x.34), pk(~skB.20))
+       authEncMsg
+             = auth_encrypt(<<z.27, pk(x.34)>, x.35>, x.34, pk(~skB.20))
+       recipientPkA
+             = recipientPkA.25
+       z     = z.27
+       z.1   = pk(x.34)
+       z.2   = true
+       z.3   = pk(x.34)
+       z.4   = verify(x.35, <z.27, pk(x.34)>, recipientPkA.25)
+    
+    9. ~skB  = ~skB.21
+       aencPkSender
+             = aenc(pk(x.35), pk(~skB.21))
+       authEncMsg
+             = auth_encrypt(<<z.28, z.29>, x.36>, x.35, pk(~skB.21))
+       recipientPkA
+             = recipientPkA.26
+       z     = z.28
+       z.1   = z.29
+       z.2   = auth_verify(auth_encrypt(<<z.28, z.29>, x.36>, x.35,
+                                        pk(~skB.21)),
+                           z.29, ~skB.21)
+       z.3   = pk(x.35)
+       z.4   = verify(x.36, <z.28, z.29>, recipientPkA.26)
+  */
+
+rule (modulo E) b_send_authcrypt_msg_to_a:
+   [
+   Invitee_St_responded( $B, $A, ~skB, didB, pkB, didA, pkA ),
+   Fr( ~msg )
+   ]
+  --[ BsendMsg( ), Running( $B, $A, ~msg ) ]->
+   [
+   Out( <'DIDComm_Message', aenc(pk(~skB), pkA), 
+         auth_encrypt(<'msg', ~msg>, ~skB, pkA)>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) offline_display_matching_verification:
+   [
+   Inviter_DID_Displays( $A, didA, didB ),
+   Invitee_DID_Displays( $B, didB, didA )
+   ]
+  --[ OfflineVerification( ) ]->
+   [ Displays_Match( $A, $B, didA, didB ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) a_receive_authcrypt_msg_from_b:
+   [
+   In( <'DIDComm_Message', aencPkSender, authEncMsg> ),
+   Inviter_St_responded( $A, $B, didB, pkB, didA, ~skA ),
+   Displays_Match( $A, $B, didA, didB )
+   ]
+  --[
+  MustBeTrue( auth_verify(authEncMsg, adec(aencPkSender, ~skA), ~skA)
+  ),
+  MustBeEqual( fst(auth_decrypt(authEncMsg, adec(aencPkSender, ~skA),
+                                ~skA)),
+               'msg'
+  ),
+  MustBeEqual( adec(aencPkSender, ~skA), pkB ),
+  Secret( snd(auth_decrypt(authEncMsg, adec(aencPkSender, ~skA),
+                           ~skA))
+  ),
+  Commit( $B, $A,
+          snd(auth_decrypt(authEncMsg, adec(aencPkSender, ~skA), ~skA))
+  ),
+  AreceiveMsg( )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) a_receive_authcrypt_msg_from_b:
+     [
+     In( <'DIDComm_Message', aencPkSender, authEncMsg> ),
+     Inviter_St_responded( $A, $B, didB, pkB, didA, ~skA ),
+     Displays_Match( $A, $B, didA, didB )
+     ]
+    --[
+    MustBeTrue( z ), MustBeEqual( z.1, 'msg' ),
+    MustBeEqual( z.2, pkB ), Secret( z.3 ), Commit( $B, $A, z.3 ),
+    AreceiveMsg( )
+    ]->
+     [ ]
+    variants (modulo AC)
+    1. ~skA  = ~skA.18
+       aencPkSender
+             = aencPkSender.19
+       authEncMsg
+             = authEncMsg.20
+       z     = auth_verify(authEncMsg.20, adec(aencPkSender.19, ~skA.18),
+                           ~skA.18)
+       z.1   = fst(auth_decrypt(authEncMsg.20,
+                                adec(aencPkSender.19, ~skA.18), ~skA.18))
+       z.2   = adec(aencPkSender.19, ~skA.18)
+       z.3   = snd(auth_decrypt(authEncMsg.20,
+                                adec(aencPkSender.19, ~skA.18), ~skA.18))
+    
+    2. ~skA  = ~skA.26
+       aencPkSender
+             = aenc(z.36, pk(~skA.26))
+       authEncMsg
+             = authEncMsg.28
+       z     = auth_verify(authEncMsg.28, z.36, ~skA.26)
+       z.1   = fst(auth_decrypt(authEncMsg.28, z.36, ~skA.26))
+       z.2   = z.36
+       z.3   = snd(auth_decrypt(authEncMsg.28, z.36, ~skA.26))
+    
+    3. ~skA  = ~skA.30
+       aencPkSender
+             = aenc(pk(x.56), pk(~skA.30))
+       authEncMsg
+             = auth_encrypt(x.55, x.56, pk(~skA.30))
+       z     = true
+       z.1   = fst(x.55)
+       z.2   = pk(x.56)
+       z.3   = snd(x.55)
+    
+    4. ~skA  = ~skA.30
+       aencPkSender
+             = aenc(pk(x.56), pk(~skA.30))
+       authEncMsg
+             = auth_encrypt(<z.38, z.41>, x.56, pk(~skA.30))
+       z     = true
+       z.1   = z.38
+       z.2   = pk(x.56)
+       z.3   = z.41
+  */
+
+restriction unique_issuer:
+  "∀ #i #j.
+    ((SetupIssuer( ) @ #i) ∧ (SetupIssuer( ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+restriction checks:
+  "∀ x #i. (MustBeTrue( x ) @ #i) ⇒ (x = true)"
+  // safety formula
+
+restriction equality:
+  "∀ x y #i. (MustBeEqual( x, y ) @ #i) ⇒ (x = y)"
+  // safety formula
+
+lemma executable:
+  exists-trace
+  "∃ #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9.
+    (((((((((((((((((((((((((SendInvitation( ) @ #t1) ∧
+                            (ReceiveInvitation( ) @ #t2)) ∧
+                           (SendExchangeRequest( ) @ #t3)) ∧
+                          (ReceiveExchangeRequest( ) @ #t4)) ∧
+                         (SendExchangeResponse( ) @ #t5)) ∧
+                        (ReceiveExchangeResponse( ) @ #t6)) ∧
+                       (BsendMsg( ) @ #t7)) ∧
+                      (OfflineVerification( ) @ #t8)) ∧
+                     (AreceiveMsg( ) @ #t9)) ∧
+                    (#t1 < #t2)) ∧
+                   (#t2 < #t3)) ∧
+                  (#t3 < #t4)) ∧
+                 (#t4 < #t5)) ∧
+                (#t5 < #t6)) ∧
+               (#t6 < #t7)) ∧
+              (#t7 < #t8)) ∧
+             (#t8 < #t9)) ∧
+            (∀ #t. (SendInvitation( ) @ #t) ⇒ (#t = #t1))) ∧
+           (∀ #t. (ReceiveInvitation( ) @ #t) ⇒ (#t = #t2))) ∧
+          (∀ #t. (SendExchangeRequest( ) @ #t) ⇒ (#t = #t3))) ∧
+         (∀ #t. (ReceiveExchangeRequest( ) @ #t) ⇒ (#t = #t4))) ∧
+        (∀ #t. (SendExchangeResponse( ) @ #t) ⇒ (#t = #t5))) ∧
+       (∀ #t. (ReceiveExchangeResponse( ) @ #t) ⇒ (#t = #t6))) ∧
+      (∀ #t. (BsendMsg( ) @ #t) ⇒ (#t = #t7))) ∧
+     (∀ #t. (OfflineVerification( ) @ #t) ⇒ (#t = #t8))) ∧
+    (∀ #t. (AreceiveMsg( ) @ #t) ⇒ (#t = #t9))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9.
+  (SendInvitation( ) @ #t1) ∧
+  (ReceiveInvitation( ) @ #t2) ∧
+  (SendExchangeRequest( ) @ #t3) ∧
+  (ReceiveExchangeRequest( ) @ #t4) ∧
+  (SendExchangeResponse( ) @ #t5) ∧
+  (ReceiveExchangeResponse( ) @ #t6) ∧
+  (BsendMsg( ) @ #t7) ∧
+  (OfflineVerification( ) @ #t8) ∧
+  (AreceiveMsg( ) @ #t9)
+ ∧
+  (#t1 < #t2) ∧
+  (#t2 < #t3) ∧
+  (#t3 < #t4) ∧
+  (#t4 < #t5) ∧
+  (#t5 < #t6) ∧
+  (#t6 < #t7) ∧
+  (#t7 < #t8) ∧
+  (#t8 < #t9) ∧
+  (∀ #t. (SendInvitation( ) @ #t) ⇒ #t = #t1) ∧
+  (∀ #t. (ReceiveInvitation( ) @ #t) ⇒ #t = #t2) ∧
+  (∀ #t. (SendExchangeRequest( ) @ #t) ⇒ #t = #t3) ∧
+  (∀ #t. (ReceiveExchangeRequest( ) @ #t) ⇒ #t = #t4) ∧
+  (∀ #t. (SendExchangeResponse( ) @ #t) ⇒ #t = #t5) ∧
+  (∀ #t. (ReceiveExchangeResponse( ) @ #t) ⇒ #t = #t6) ∧
+  (∀ #t. (BsendMsg( ) @ #t) ⇒ #t = #t7) ∧
+  (∀ #t. (OfflineVerification( ) @ #t) ⇒ #t = #t8) ∧
+  (∀ #t. (AreceiveMsg( ) @ #t) ⇒ #t = #t9)"
+*/
+simplify
+solve( Invitee_St_invited( $B.2, recipientPkA.1, $A.2 ) ▶₀ #t3 )
+  case b_receive_invitation
+  solve( Inviter_St_invited( $A.2, ~recipientSkA.1, $B.2 ) ▶₀ #t4 )
+    case a_send_invitation
+    solve( Inviter_St_requested( $A.2, ~recipientSkA.1, $B.2, didB.1,
+                                 pkB.1
+           ) ▶₀ #t5 )
+      case a_receive_exchange_request
+      solve( Invitee_St_requested( $B.2, pk(x), $A.2, ~skB.1, didB.1,
+                                   pkB.1
+             ) ▶₀ #t6 )
+        case b_generate_did_and_send_exchange_request
+        solve( Invitee_St_responded( $B.2, $A.2, ~skB.1, didB.1, pkB.1,
+                                     didA, pkA
+               ) ▶₀ #t7 )
+          case b_receive_exchange_response
+          solve( Inviter_DID_Displays( $A.2, didA.1, didB.1 ) ▶₀ #t8 )
+            case a_generate_did_and_send_exchange_response
+            solve( Invitee_DID_Displays( $B.2, didB, did_generate(pk(~skA))
+                   ) ▶₁ #t8 )
+              case b_receive_exchange_response
+              solve( Inviter_St_responded( $A.2, $B.2, didB, pk(x.2), didA,
+                                           ~skA.1
+                     ) ▶₁ #t9 )
+                case a_generate_did_and_send_exchange_response
+                solve( Displays_Match( $A, $B, did_generate(pk(~skA)),
+                                       did_generate(pk(~skB))
+                       ) ▶₂ #t9 )
+                  case offline_display_matching_verification
+                  solve( !KU( aenc(<'ExchangeRequest', $B, $A, 
+                                    did_generate(pk(~skB)), pk(x.1)>,
+                                   pk(~recipientSkA))
+                         ) @ #vk.7 )
+                    case b_generate_did_and_send_exchange_request
+                    solve( !KU( aenc(pk(x), pk(~skB)) ) @ #vk.11 )
+                      case a_generate_did_and_send_exchange_response
+                      solve( !KU( auth_encrypt(<'msg', z>, ~skB, pk(~skA)) ) @ #vk.17 )
+                        case b_send_authcrypt_msg_to_a
+                        solve( !KU( auth_encrypt(<<did_generate(pk(~skA)), pk(~skA)>, 
+                                                  sign(<did_generate(pk(~skA)), pk(~skA)>,
+                                                       ~recipientSkA)
+                                                 >,
+                                                 ~skA, pk(~skB))
+                               ) @ #vk.13 )
+                          case a_generate_did_and_send_exchange_response
+                          solve( !KU( aenc(pk(~skB), pk(~skA)) ) @ #vk.17 )
+                            case b_send_authcrypt_msg_to_a
+                            solve( !KU( pk(~recipientSkA) ) @ #vk.15 )
+                              case a_send_invitation
+                              SOLVED // trace found
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma secrecy:
+  all-traces
+  "∀ msg #i. (Secret( msg ) @ #i) ⇒ (¬(∃ #j. K( msg ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ msg #i. (Secret( msg ) @ #i) ∧ ∃ #j. (K( msg ) @ #j)"
+*/
+simplify
+solve( Inviter_St_responded( $A, $B, didB, pk(x), didA, ~skA
+       ) ▶₁ #i )
+  case a_generate_did_and_send_exchange_response
+  solve( Displays_Match( $A, $B, did_generate(pk(~skA)), didB
+         ) ▶₂ #i )
+    case offline_display_matching_verification
+    solve( !KU( aenc(pk(x), pk(~skA)) ) @ #vk.3 )
+      case c_aenc
+      solve( !KU( auth_encrypt(<'msg', msg>, x, pk(~skA)) ) @ #vk.4 )
+        case c_auth_encrypt
+        solve( !KU( aenc(<'ExchangeRequest', $B, $A, 
+                          did_generate(pk(~skB)), pk(x)>,
+                         pk(~recipientSkA))
+               ) @ #vk.7 )
+          case c_aenc
+          solve( !KU( aenc(pk(x.1), pk(~skB)) ) @ #vk.12 )
+            case c_aenc
+            solve( !KU( auth_encrypt(<<did_generate(pk(~skA)), pk(x.1)>, 
+                                      sign(<did_generate(pk(~skA)), pk(x.1)>, x.2)>,
+                                     x.1, pk(~skB))
+                   ) @ #vk.13 )
+              case c_auth_encrypt
+              solve( !KU( sign(<did_generate(pk(~skA)), pk(x.1)>, x.2)
+                     ) @ #vk.37 )
+                case c_sign
+                solve( !KU( pk(~skA) ) @ #vk.26 )
+                  case a_generate_did_and_send_exchange_response
+                  solve( !KU( did_generate(pk(~skB)) ) @ #vk.32 )
+                    case b_generate_did_and_send_exchange_request
+                    solve( !KU( did_generate(pk(~skA)) ) @ #vk.37 )
+                      case a_generate_did_and_send_exchange_response
+                      solve( !KU( pk(x.1) ) @ #vk.27 )
+                        case c_pk
+                        solve( !KU( pk(x) ) @ #vk.30 )
+                          case c_pk
+                          solve( !KU( pk(x.2) ) @ #vk.35 )
+                            case c_pk
+                            solve( !KU( pk(~recipientSkA) ) @ #vk.34 )
+                              case a_send_invitation
+                              solve( !KU( pk(~skB) ) @ #vk.36 )
+                                case b_generate_did_and_send_exchange_request
+                                SOLVED // trace found
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma agreement:
+  all-traces
+  "∀ b a msg #i.
+    (Commit( b, a, msg ) @ #i) ⇒
+    (∃ #j. (Running( b, a, msg ) @ #j) ∧ (#j < #i))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ b a msg #i.
+  (Commit( b, a, msg ) @ #i)
+ ∧
+  ∀ #j. (Running( b, a, msg ) @ #j) ⇒ ¬(#j < #i)"
+*/
+simplify
+solve( Inviter_St_responded( $A, $B, didB, pk(x), didA, ~skA
+       ) ▶₁ #i )
+  case a_generate_did_and_send_exchange_response
+  solve( Displays_Match( $A, $B, did_generate(pk(~skA)), didB
+         ) ▶₂ #i )
+    case offline_display_matching_verification
+    solve( !KU( aenc(pk(x), pk(~skA)) ) @ #vk.3 )
+      case c_aenc
+      solve( !KU( auth_encrypt(<'msg', msg>, x, pk(~skA)) ) @ #vk.4 )
+        case c_auth_encrypt
+        solve( !KU( aenc(<'ExchangeRequest', $B, $A, 
+                          did_generate(pk(~skB)), pk(x)>,
+                         pk(~recipientSkA))
+               ) @ #vk.5 )
+          case c_aenc
+          solve( !KU( aenc(pk(x.1), pk(~skB)) ) @ #vk.10 )
+            case c_aenc
+            solve( !KU( auth_encrypt(<<did_generate(pk(~skA)), pk(x.1)>, 
+                                      sign(<did_generate(pk(~skA)), pk(x.1)>, x.2)>,
+                                     x.1, pk(~skB))
+                   ) @ #vk.11 )
+              case c_auth_encrypt
+              solve( !KU( sign(<did_generate(pk(~skA)), pk(x.1)>, x.2)
+                     ) @ #vk.37 )
+                case c_sign
+                solve( !KU( pk(~skA) ) @ #vk.24 )
+                  case a_generate_did_and_send_exchange_response
+                  solve( !KU( did_generate(pk(~skB)) ) @ #vk.32 )
+                    case b_generate_did_and_send_exchange_request
+                    solve( !KU( did_generate(pk(~skA)) ) @ #vk.37 )
+                      case a_generate_did_and_send_exchange_response
+                      solve( !KU( pk(x.1) ) @ #vk.25 )
+                        case c_pk
+                        solve( !KU( pk(x) ) @ #vk.28 )
+                          case c_pk
+                          solve( !KU( pk(x.2) ) @ #vk.35 )
+                            case c_pk
+                            solve( !KU( pk(~recipientSkA) ) @ #vk.34 )
+                              case a_send_invitation
+                              solve( !KU( pk(~skB) ) @ #vk.36 )
+                                case b_generate_did_and_send_exchange_request
+                                SOLVED // trace found
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end

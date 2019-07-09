@@ -1,0 +1,234 @@
+theory didcomm_did_exchange_with_vcs
+/* We model a peer-DID exchange (*) and following message. 
+We model a peer DID more precisely as being generated from the hash of the initial DID Document,
+see: https://dhh1128.github.io/peer-did-method-spec/index.html#namestring-generation-method
+We model the generation as an abstract function. In this model, the DID Doc just consists of single public key.
+
+(*) According to https://github.com/hyperledger/aries-rfcs/blob/master/features/0023-did-exchange/README.md
+
+*/
+
+
+
+begin
+
+builtins: signing, asymmetric-encryption
+
+/* auth_encrypt and auth_decrypt model authCrypt, an authenticated, but repudiable encryption
+Encrypting requires the receiver's public key, and additionally the *sender's private key*
+Decrypting requires the receiver's private key, and additionally the *sender's public key*
+See https://github.com/hyperledger/aries-rfcs/tree/03a74a813e9e4f32d969ae4c37a0b3bb538c28c8/features/0019-encryption-envelope
+Note that we abstract away from the encrypted cek, which then encrypts the plaintext; this only affects efficiency, but not security.
+
+We model anonCrypt with Tamarin's built-in asymmetric encryption function aenc.
+*/
+
+functions: auth_encrypt/3, auth_decrypt/3, auth_verify/3, true/0, did_generate/1
+
+equations: auth_decrypt(auth_encrypt(msg, sender_sk, pk(receiver_sk)), pk(sender_sk), receiver_sk) = msg,
+auth_verify(auth_encrypt(msg, sender_sk, pk(receiver_sk)), pk(sender_sk), receiver_sk) = true
+
+
+/*
+We model a simple honest and trusted issuer of verifiable credentials
+who binds dids to public names, such as $A and $B.
+We assume that the issuer performs out-of-band verification of this binding.
+*/
+rule setup_issuer:
+[Fr(~skIssuer)]
+--[SetupIssuer()]->
+[!Sk_Issuer(~skIssuer), !Pk_Issuer(pk(~skIssuer)), Out(pk(~skIssuer))]
+
+rule issue_verifiable_credential:
+let verifiable_credential = sign(<'DID_binding', $Name, did>, ~skIssuer) in
+[!DID_belongs_to($Name, did), !Sk_Issuer(~skIssuer)]
+-->
+[Out(verifiable_credential), Issued_VC($Name, did, verifiable_credential)]
+
+
+
+
+
+/* Let us call the inviter $A and the invitee $B.
+$A and $B are public names uniquely identifying agents.
+
+We assume that peer-DIDs are only generated when needed,
+i.e., $A only generates their A-B-peer-DID when responding,
+not yet when sending the invite. 
+
+We also assume that channels are insecure unless explicitly stated otherwise in the specification.
+*/
+
+
+rule a_send_invitation:
+[Fr(~recipientSkA)]
+--[SendInvitation()]->
+[Out(<'Invitation', $A, $B, pk(~recipientSkA)>), Inviter_St_invited($A, ~recipientSkA, $B)]
+
+rule b_receive_invitation:
+[In(<'Invitation', $A, $B, recipientPkA>)]
+--[ReceiveInvitation()]->
+[Invitee_St_invited($B, recipientPkA, $A)]
+
+rule b_generate_did_and_send_exchange_request:
+let pkB = pk(~skB)
+    didB = did_generate(pkB) in
+[Invitee_St_invited($B, recipientPkA, $A), Fr(~skB)]
+--[SendExchangeRequest()]->
+[Out(aenc(<'ExchangeRequest', $B, $A, <didB, pkB> >, recipientPkA)), Invitee_St_requested($B, recipientPkA, $A, ~skB, didB, pkB)]
+
+rule a_receive_exchange_request:
+[Inviter_St_invited($A, ~recipientSkA, $B), In(aenc(<'ExchangeRequest', $B, $A, <didB, pkB> >, pk(~recipientSkA) ))]
+--[ReceiveExchangeRequest()]->
+[Inviter_St_requested($A, ~recipientSkA, $B, didB, pkB)]
+
+rule a_generate_did_and_send_exchange_response:
+let pkA = pk(~skA)
+    didA = did_generate(pkA)
+    connectionA = <didA, pkA> in
+[Inviter_St_requested($A, ~recipientSkA, $B, didB, pkB), Fr(~skA)]
+--[SendExchangeResponse()]->
+/* From the spec:
+The message should be packaged in the encrypted envelope format, using the keys from the request, and the new keys presented in the internal did doc.
+We interpret this to mean authCrypt with [keys from the request = receiver keys] [new keys = sender keys]. */
+[Out(<'ExchangeRequest', aenc(pkA, pkB), auth_encrypt(<connectionA, sign(connectionA, ~recipientSkA)> , ~skA, pkB) >), Inviter_St_responded($A, $B, didB, pkB, didA, ~skA)]
+
+rule b_receive_exchange_response:
+let pkSender = adec(aencPkSender, ~skB)
+    decryptedMsg = auth_decrypt(authEncMsg, pkSender, ~skB)
+    connectionA = fst(decryptedMsg)
+    signatureConnectionA = snd(decryptedMsg)
+    didA = fst(connectionA)
+    pkA = snd(connectionA)
+    decryptionSuccessful = auth_verify(authEncMsg, pkA, ~skB) in
+[Invitee_St_requested($B, recipientPkA, $A, ~skB, didB, pkB), In(<'ExchangeRequest', aencPkSender, authEncMsg>)]
+--[ReceiveExchangeResponse(), MustBeTrue(decryptionSuccessful), MustBeEqual(pkSender, pkA), MustBeTrue(verify(signatureConnectionA, connectionA, recipientPkA))]->
+[Invitee_St_responded($B, $A, ~skB, didB, pkB, didA, pkA), !DID_belongs_to($B, didB)]
+
+
+/* Now, A and B first exchange verifiable credentials before they exchange the payload message that should be secure.
+   We also include receiving the VC in this rule; this must also be refined in subsequent models.
+ */
+
+rule b_send_verifiable_credential_to_a:
+let verifiable_credential = sign(<'DID_binding', $B, didB>, skIssuer) in
+[Invitee_St_responded($B, $A, ~skB, didB, pkB, didA, pkA), Issued_VC($B, didB, verifiable_credential)]
+--[BsendVC()]->
+[Out(<'DIDComm_Message', aenc(pk(~skB), pkA), auth_encrypt(<'VC', verifiable_credential>, ~skB, pkA)>), Invitee_St_complete($B, $A, ~skB, didB, pkB, didA, pkA)]
+
+
+rule a_receive_and_verify_credential_from_b:
+// A checks (implicitly through pattern matching) whether pkSender = pkB
+let pkB = adec(aencPkSender, ~skA)
+    decryptedMsg = auth_decrypt(authEncMsg, pkB, ~skA)
+    decryptionSuccessful = auth_verify(authEncMsg, pkB, ~skA) in
+[In(<'DIDComm_Message', aencPkSender, authEncMsg>), Inviter_St_responded($A, $B, didB, pkB, didA, ~skA), !Pk_Issuer(pk(skIssuer))]
+// These action facts implicitly encode credential verification
+--[AreceiveVC(), MustBeTrue(decryptionSuccessful), MustBeEqual(decryptedMsg,  <'VC', sign(<'DID_binding', $B, didB>, skIssuer)>)]->
+// Only consider DID bound to A at this point - if the exchange does not finish, the peer DID has no meaning, and the exchange is only finished after A (inviter)
+// has received a message from B (invitee)
+[Inviter_St_complete($A, $B, didB, pkB, didA, ~skA), !DID_belongs_to($A, didA)]
+
+rule a_send_verifiable_credential_to_b:
+let verifiable_credential = sign(<'DID_binding', $A, didA>, skIssuer) in
+[Inviter_St_complete($A, $B, didB, pkB, didA, ~skA), Issued_VC($A, didA, verifiable_credential)]
+--[AsendVC()]->
+[Out(<'DIDComm_Message', aenc(pk(~skA), pkB), auth_encrypt(<'VC', verifiable_credential>, ~skA, pkB)>), Inviter_St_verified($A, $B, didB, pkB, didA, ~skA)]
+
+rule b_receive_and_verify_credential_from_a:
+let pkSender = adec(aencPkSender, ~skB)
+    decryptedMsg = auth_decrypt(authEncMsg, pkSender, ~skB)
+    decryptionSuccessful = auth_verify(authEncMsg, pkSender, ~skB) in
+[In(<'DIDComm_Message', aencPkSender, authEncMsg>), Invitee_St_complete($B, $A, ~skB, didB, pkB, didA, pkA), !Pk_Issuer(pk(skIssuer))]
+// These action facts implicitly encode credential verification
+--[BreceiveVC(), MustBeTrue(decryptionSuccessful), MustBeEqual(pkSender, pkA), MustBeEqual(decryptedMsg,  <'VC', sign(<'DID_binding', $B, didB>, skIssuer)>)]->
+[Invitee_St_verified($B, $A, ~skB, didB, pkB, didA, pkA)]
+
+
+/*
+The payload message (for which we would like secrecy and agreement properties)
+is only sent after verifiable credential exchange is complete
+*/
+
+rule b_send_authcrypt_msg_to_a:
+[Invitee_St_verified($B, $A, ~skB, didB, pkB, didA, pkA), Fr(~msg)]
+--[BsendMsg(), Running($B, $A, ~msg)]->
+[Out(<'DIDComm_Message', aenc(pk(~skB), pkA), auth_encrypt(<'msg', ~msg>, ~skB, pkA)>)]
+
+
+rule a_receive_authcrypt_msg_from_b:
+let pkSender = adec(aencPkSender, ~skA)
+    decryptedMsg = auth_decrypt(authEncMsg, pkSender, ~skA)
+    decryptionSuccessful = auth_verify(authEncMsg, pkSender, ~skA) in
+[In(<'DIDComm_Message', aencPkSender, authEncMsg>), Inviter_St_verified($A, $B, didB, pkB, didA, ~skA)]
+--[MustBeTrue(decryptionSuccessful), MustBeEqual(fst(decryptedMsg), 'msg'), MustBeEqual(pkSender, pkB), Secret(snd(decryptedMsg)), Commit($B, $A, snd(decryptedMsg)), AreceiveMsg()]->
+[]
+
+
+// This restriction enforces that there is only a single issuer
+// (In this model, we assume a single, trusted issuer)
+restriction unique_issuer:
+    "All #i #j. SetupIssuer() @ i & SetupIssuer() @ j ==> #i = #j"
+
+// This restriction is used for the check for successful encryption
+restriction checks:
+    "All x #i. MustBeTrue(x) @ #i ==> x = true"
+
+restriction equality:
+    "All x y #i. MustBeEqual(x, y) @ #i ==> x = y"
+
+// This lemma ensures the protocol is executable (there are no obvious mistakes)
+lemma executable:
+exists-trace
+" Ex #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9 #t10 #t11 #t12.
+SendInvitation() @ t1 & ReceiveInvitation() @ t2 &
+SendExchangeRequest() @ t3 & ReceiveExchangeRequest() @ t4 &
+SendExchangeResponse() @ t5 & ReceiveExchangeResponse() @ t6 &
+BsendVC() @ t7 & AreceiveVC() @ t8 & AsendVC() @ t9 & BreceiveVC() @ t10
+& BsendMsg() @ t11 & AreceiveMsg() @ t12 &
+t1 < t2 & t2 < t3 & t3 < t4 & t4 < t5 & t5 < t6 &
+t6 < t7 & t7 < t8 & t8 < t9 & t9 < t10 & t10 < t11 & t11 < t12
+& 
+(All #t. SendInvitation() @ t ==> #t = #t1) &
+(All #t. ReceiveInvitation() @ t ==> #t = #t2) &
+(All #t. SendExchangeRequest() @ t ==> #t = #t3) &
+(All #t. ReceiveExchangeRequest() @ t ==> #t = #t4) &
+(All #t. SendExchangeResponse() @ t ==> #t = #t5) &
+(All #t. ReceiveExchangeResponse() @ t ==> #t = #t6) &
+(All #t. BsendVC() @ t ==> #t = #t7) &
+(All #t. AreceiveVC() @ t ==> #t = #t8) &
+(All #t. AsendVC() @ t ==> #t = #t9) &
+(All #t. BreceiveVC() @ t ==> #t = #t10) &
+(All #t. BsendMsg() @ t ==> #t = #t11) &
+(All #t. AreceiveMsg() @ t ==> #t = #t12)
+"
+
+
+
+// These lemmas give semantics to the security claims made in the protocol
+
+lemma secrecy:
+" All msg #i. Secret(msg) @ #i ==> not Ex #j. K(msg) @ j"
+
+lemma agreement:
+" All b a msg #i. Commit(b, a, msg) @ i ==> Ex #j. Running(b, a, msg) @ j & #j < #i"
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
