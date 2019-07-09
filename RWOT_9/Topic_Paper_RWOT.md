@@ -88,7 +88,7 @@ This model implements the fix described above: A verifies for any exchange reque
 
 In this fixed version, the security properties could be proven.
 
-For readers interested in the details, the Tamarin models are available at (TODO: add github link). 
+For readers interested in the details, the Tamarin models are available in the folder *DID_Tamarin*.
 
 ### Thoughts on further topics
 
