@@ -1,4 +1,4 @@
-# Formal protocol verification for SSI 
+# Long version of RWOT-9 topic paper: Formal protocol verification for SSI
 
 ## Introduction
 
